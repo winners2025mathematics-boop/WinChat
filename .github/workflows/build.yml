@@ -13,17 +13,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: BEFORE scaffolding — check files
+        run: |
+          echo "=== ls android/app/ ==="
+          ls -la android/app/
+          echo "=== google-services.json content ==="
+          cat android/app/google-services.json || echo "MISSING"
+          echo "=== plugin in build.gradle.kts ==="
+          grep -n "google-services" android/app/build.gradle.kts || echo "NOT FOUND"
+          echo "=== plugin in settings.gradle.kts ==="
+          grep -n "google-services" android/settings.gradle.kts || echo "NOT FOUND"
+
+      - uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.5'
           channel: 'stable'
@@ -36,14 +44,19 @@ jobs:
           cp -rn temp_scaffold/test/ . 2>/dev/null || true
           rm -rf temp_scaffold
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: AFTER scaffolding — check files
+        run: |
+          echo "=== ls android/app/ ==="
+          ls -la android/app/
+          echo "=== google-services.json content ==="
+          cat android/app/google-services.json || echo "MISSING"
+          echo "=== plugin in build.gradle.kts ==="
+          grep -n "google-services" android/app/build.gradle.kts || echo "NOT FOUND"
 
-      - name: Build debug APK
-        run: flutter build apk --debug
+      - run: flutter pub get
+      - run: flutter build apk --debug
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: sms-gateway-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
