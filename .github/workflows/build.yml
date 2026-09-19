@@ -15,17 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: BEFORE scaffolding — check files
-        run: |
-          echo "=== ls android/app/ ==="
-          ls -la android/app/
-          echo "=== google-services.json content ==="
-          cat android/app/google-services.json || echo "MISSING"
-          echo "=== plugin in build.gradle.kts ==="
-          grep -n "google-services" android/app/build.gradle.kts || echo "NOT FOUND"
-          echo "=== plugin in settings.gradle.kts ==="
-          grep -n "google-services" android/settings.gradle.kts || echo "NOT FOUND"
-
       - uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
@@ -41,17 +30,16 @@ jobs:
         run: |
           flutter create --org com.winchat --project-name smsgateway --platforms=android temp_scaffold
           cp -rn temp_scaffold/android/. android/ 2>/dev/null || true
+          # Remove the Groovy build.gradle if it got copied — we use Kotlin DSL
+          rm -f android/app/build.gradle
+          rm -f android/build.gradle
           cp -rn temp_scaffold/test/ . 2>/dev/null || true
           rm -rf temp_scaffold
 
-      - name: AFTER scaffolding — check files
+      - name: Verify
         run: |
-          echo "=== ls android/app/ ==="
           ls -la android/app/
-          echo "=== google-services.json content ==="
-          cat android/app/google-services.json || echo "MISSING"
-          echo "=== plugin in build.gradle.kts ==="
-          grep -n "google-services" android/app/build.gradle.kts || echo "NOT FOUND"
+          grep -n "google-services" android/app/build.gradle.kts
 
       - run: flutter pub get
       - run: flutter build apk --debug
