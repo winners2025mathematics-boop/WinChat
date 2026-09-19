@@ -1,0 +1,48 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+          channel: 'stable'
+          cache: true
+
+      - name: Create Flutter project scaffolding
+        run: |
+          flutter create --org com.winchat --project-name smsgateway --platforms=android temp_scaffold
+          cp -rn temp_scaffold/android/. android/ 2>/dev/null || true
+          cp -rn temp_scaffold/test/ . 2>/dev/null || true
+          cp -rn temp_scaffold/analysis_options.yaml . 2>/dev/null || true
+          rm -rf temp_scaffold
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sms-gateway-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 30

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "726919290838",
+    "project_id": "winchat-3a860",
+    "storage_bucket": "winchat-3a860.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:726919290838:android:f8c98aba980573057f4e77",
+        "android_client_info": {
+          "package_name": "com.winchat.smsgateway"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyALzAMF5y15d73C21-CiSRuUoOzLUZACGA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
