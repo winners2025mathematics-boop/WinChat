@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -18,17 +19,22 @@ void logLine(String s) {
   try {
     final current = List<String>.from(logNotifier.value);
     current.insert(0, line);
-    if (current.length > 200) current.removeLast();
+    if (current.length > 300) current.removeLast();
     logNotifier.value = current;
   } catch (_) {}
 }
 
 Future<bool> requestSmsPermissions() async {
-  final statuses = await [Permission.sms, Permission.phone].request();
-  final smsOk = statuses[Permission.sms]?.isGranted ?? false;
-  final phoneOk = statuses[Permission.phone]?.isGranted ?? false;
-  logLine('Permissions -> SMS: $smsOk  Phone: $phoneOk');
-  return smsOk && phoneOk;
+  try {
+    final sms = await Permission.sms.request();
+    logLine('Perm SMS: ${sms.isGranted ? "OK" : "DENIED"}');
+    final phone = await Permission.phone.request();
+    logLine('Perm Phone: ${phone.isGranted ? "OK" : "DENIED"}');
+    return sms.isGranted && phone.isGranted;
+  } catch (e) {
+    logLine('Perm exception: $e');
+    return false;
+  }
 }
 
 Future<void> fetchAndSend(String otpId) async {
@@ -36,32 +42,40 @@ Future<void> fetchAndSend(String otpId) async {
   try {
     final hasPermission = await requestSmsPermissions();
     if (!hasPermission) {
-      logLine('  X SMS / Phone permission denied');
+      logLine('  X SMS permission denied');
       return;
     }
+
     final url = Uri.parse('$SERVER_URL?id=$otpId');
     logLine('  GET $url');
-    final res = await http.get(url, headers: {'X-Gateway-Key': GATEWAY_KEY}).timeout(const Duration(seconds: 15));
+    final res = await http
+        .get(url, headers: {'X-Gateway-Key': GATEWAY_KEY})
+        .timeout(const Duration(seconds: 20));
     logLine('  HTTP ${res.statusCode}');
     logLine('  body: ${res.body}');
+
     if (res.statusCode != 200) {
       logLine('  X server returned ${res.statusCode}');
       return;
     }
+
     final dynamic decoded = jsonDecode(res.body);
     if (decoded is! Map<String, dynamic>) {
       logLine('  X invalid JSON');
       return;
     }
+
     final phone = decoded['phone']?.toString().trim();
     final msg = decoded['message']?.toString();
     if (phone == null || phone.isEmpty || msg == null || msg.isEmpty) {
       logLine('  X missing phone or message');
       return;
     }
+
     logLine('  phone=$phone');
     logLine('  msg=${msg.replaceAll('\n', ' / ')}');
-    logLine('  sending SMS via SIM $SIM_SLOT...');
+    logLine('  sending via SIM $SIM_SLOT...');
+
     final sender = FlutterNativeSms();
     await sender.send(phone: phone, smsBody: msg, sim: SIM_SLOT);
     logLine('  OK SMS sent to $phone');
@@ -74,27 +88,44 @@ Future<void> fetchAndSend(String otpId) async {
 
 @pragma('vm:entry-point')
 Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp();
-  debugPrint('BACKGROUND FCM: ${message.data}');
-  final otpId = message.data['otp_id']?.toString();
-  if (otpId != null && otpId.isNotEmpty) {
-    await fetchAndSend(otpId);
+  try {
+    await Firebase.initializeApp();
+    debugPrint('BG FCM: ${message.data}');
+    final otpId = message.data['otp_id']?.toString();
+    if (otpId != null && otpId.isNotEmpty) {
+      await fetchAndSend(otpId);
+    }
+  } catch (e) {
+    debugPrint('BG error: $e');
   }
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+
+  // Show UI first
   runApp(const GatewayApp());
+
+  // Then initialize Firebase
+  try {
+    logLine('Firebase init...');
+    await Firebase.initializeApp();
+    logLine('Firebase OK');
+
+    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+    logLine('Background handler set');
+  } catch (e) {
+    logLine('Firebase FAILED: $e');
+  }
 }
 
 class GatewayApp extends StatelessWidget {
   const GatewayApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WinChat SMS Gateway',
+      title: 'SMS Gateway',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
       home: const HomePage(),
     );
@@ -103,6 +134,7 @@ class GatewayApp extends StatelessWidget {
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -110,49 +142,82 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   String _token = 'loading...';
   bool _permissionsGranted = false;
+  bool _initStarted = false;
 
   @override
   void initState() {
     super.initState();
-    _init();
+    Future.delayed(const Duration(milliseconds: 300), _init);
   }
 
   Future<void> _init() async {
-    logLine('init start');
-    await FirebaseMessaging.instance.requestPermission(alert: true, badge: true, sound: true);
-    logLine('FCM permission requested');
-    _permissionsGranted = await requestSmsPermissions();
-    if (!_permissionsGranted) {
-      logLine('WARN SMS permission missing');
+    if (_initStarted) return;
+    _initStarted = true;
+
+    logLine('--- init start ---');
+
+    try {
+      await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      logLine('FCM permission requested');
+    } catch (e) {
+      logLine('FCM permission error: $e');
     }
-    final token = await FirebaseMessaging.instance.getToken();
-    logLine('token=${token?.substring(0, 30)}...');
-    setState(() => _token = token ?? 'null');
-    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-      logLine('TOKEN REFRESHED: ${newToken.substring(0, 30)}...');
-      setState(() => _token = newToken);
-    });
-    FirebaseMessaging.onMessage.listen((RemoteMessage msg) {
-      logLine('FOREGROUND FCM: ${msg.data}');
-      final otpId = msg.data['otp_id']?.toString();
-      if (otpId != null && otpId.isNotEmpty) {
-        fetchAndSend(otpId);
-      } else {
-        logLine('  WARN no otp_id');
+
+    try {
+      _permissionsGranted = await requestSmsPermissions();
+      if (mounted) setState(() {});
+    } catch (e) {
+      logLine('SMS permission error: $e');
+    }
+
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      logLine('token=${token != null ? token.substring(0, 30) : "NULL"}...');
+      if (mounted) setState(() => _token = token ?? 'null');
+    } catch (e) {
+      logLine('getToken error: $e');
+      if (mounted) setState(() => _token = 'error');
+    }
+
+    try {
+      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+        logLine('TOKEN REFRESHED');
+        if (mounted) setState(() => _token = newToken);
+      });
+    } catch (_) {}
+
+    try {
+      FirebaseMessaging.onMessage.listen((RemoteMessage msg) {
+        logLine('FOREGROUND FCM: ${msg.data}');
+        final otpId = msg.data['otp_id']?.toString();
+        if (otpId != null && otpId.isNotEmpty) {
+          fetchAndSend(otpId);
+        } else {
+          logLine('  WARN no otp_id');
+        }
+      });
+
+      FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage msg) {
+        logLine('NOTIF TAPPED: ${msg.data}');
+        final otpId = msg.data['otp_id']?.toString();
+        if (otpId != null && otpId.isNotEmpty) fetchAndSend(otpId);
+      });
+
+      final initial = await FirebaseMessaging.instance.getInitialMessage();
+      if (initial != null) {
+        logLine('LAUNCHED FROM NOTIF');
+        final otpId = initial.data['otp_id']?.toString();
+        if (otpId != null && otpId.isNotEmpty) fetchAndSend(otpId);
       }
-    });
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage msg) {
-      logLine('NOTIF TAPPED: ${msg.data}');
-      final otpId = msg.data['otp_id']?.toString();
-      if (otpId != null && otpId.isNotEmpty) fetchAndSend(otpId);
-    });
-    final initial = await FirebaseMessaging.instance.getInitialMessage();
-    if (initial != null) {
-      logLine('LAUNCHED FROM NOTIF: ${initial.data}');
-      final otpId = initial.data['otp_id']?.toString();
-      if (otpId != null && otpId.isNotEmpty) fetchAndSend(otpId);
+    } catch (e) {
+      logLine('FCM listener error: $e');
     }
-    logLine('init done');
+
+    logLine('--- init done ---');
   }
 
   @override
@@ -179,21 +244,31 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(children: [
-              Chip(
-                label: Text(
-                  _permissionsGranted ? 'SMS OK' : 'SMS Permission Missing',
-                  style: const TextStyle(fontSize: 12),
+            Row(
+              children: [
+                Chip(
+                  label: Text(
+                    _permissionsGranted ? 'SMS OK' : 'SMS Permission Missing',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  backgroundColor: _permissionsGranted
+                      ? Colors.green.shade100
+                      : Colors.red.shade100,
                 ),
-                backgroundColor: _permissionsGranted ? Colors.green.shade100 : Colors.red.shade100,
-              ),
-            ]),
+              ],
+            ),
             const SizedBox(height: 8),
-            const Text('FCM TOKEN (paste into sendFCM.php):', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'FCM TOKEN (paste into sendFCM.php):',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             SelectableText(_token, style: const TextStyle(fontSize: 11)),
             const Divider(height: 24),
-            const Text('Activity:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'Activity:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             Expanded(
               child: Container(
@@ -208,7 +283,11 @@ class _HomePageState extends State<HomePage> {
                         padding: const EdgeInsets.symmetric(vertical: 1),
                         child: Text(
                           lines[i],
-                          style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontFamily: 'monospace'),
+                          style: const TextStyle(
+                            color: Colors.greenAccent,
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
                         ),
                       ),
                     );
