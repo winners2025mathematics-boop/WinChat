@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,16 +25,15 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
+          flutter-version: '3.24.5'
           channel: 'stable'
           cache: true
 
-      - name: Create Flutter project scaffolding
+      - name: Create Flutter scaffolding
         run: |
           flutter create --org com.winchat --project-name smsgateway --platforms=android temp_scaffold
           cp -rn temp_scaffold/android/. android/ 2>/dev/null || true
           cp -rn temp_scaffold/test/ . 2>/dev/null || true
-          cp -rn temp_scaffold/analysis_options.yaml . 2>/dev/null || true
           rm -rf temp_scaffold
 
       - name: Install dependencies
