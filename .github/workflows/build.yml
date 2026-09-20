@@ -13,39 +13,94 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      - uses: subosito/flutter-action@v2
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.5'
           channel: 'stable'
           cache: true
 
-      - name: Create Flutter scaffolding
+      - name: Generate fresh Flutter project
         run: |
-          flutter create --org com.winchat --project-name smsgateway --platforms=android temp_scaffold
-          cp -rn temp_scaffold/android/. android/ 2>/dev/null || true
-          # Remove the Groovy build.gradle if it got copied — we use Kotlin DSL
-          rm -f android/app/build.gradle
-          rm -f android/build.gradle
-          cp -rn temp_scaffold/test/ . 2>/dev/null || true
-          rm -rf temp_scaffold
+          flutter create --org com.winchat --project-name smsgateway --platforms=android fresh
+          ls -la fresh/android/app/src/main/
 
-      - name: Verify
+      - name: Overlay our custom files
         run: |
+          # Dart code
+          cp lib/main.dart fresh/lib/main.dart
+
+          # Firebase config
+          cp android/app/google-services.json fresh/android/app/google-services.json
+
+          # pubspec with our dependencies
+          cp pubspec.yaml fresh/pubspec.yaml
+
+          # Manifest — replace entirely
+          cp android/app/src/main/AndroidManifest.xml fresh/android/app/src/main/AndroidManifest.xml
+
+      - name: Apply Google Services plugin
+        run: |
+          cd fresh
+
+          # App-level build.gradle.kts
+          if ! grep -q "com.google.gms.google-services" android/app/build.gradle.kts; then
+            # Insert after the plugins { } block
+            awk '
+              /^plugins \{/ { in_plugins=1 }
+              in_plugins && /^\}/ {
+                print
+                print ""
+                print "apply(plugin = \"com.google.gms.google-services\")"
+                in_plugins=0
+                next
+              }
+              { print }
+            ' android/app/build.gradle.kts > tmp.gradle.kts
+            mv tmp.gradle.kts android/app/build.gradle.kts
+          fi
+
+          # Project-level settings.gradle.kts
+          if ! grep -q "com.google.gms.google-services" android/settings.gradle.kts; then
+            sed -i '/id("dev.flutter.flutter-plugin-loader")/a\    id("com.google.gms.google-services") version "4.4.2" apply false' android/settings.gradle.kts
+          fi
+
+      - name: Verify before build
+        run: |
+          cd fresh
+          echo "=== android/app files ==="
           ls -la android/app/
-          grep -n "google-services" android/app/build.gradle.kts
+          echo "=== google-services.json head ==="
+          head -5 android/app/google-services.json
+          echo "=== plugin in app build.gradle.kts ==="
+          grep -n "google-services" android/app/build.gradle.kts || echo "NOT FOUND"
+          echo "=== plugin in settings.gradle.kts ==="
+          grep -n "google-services" android/settings.gradle.kts || echo "NOT FOUND"
+          echo "=== pubspec ==="
+          cat pubspec.yaml
 
-      - run: flutter pub get
-      - run: flutter build apk --debug
+      - name: Install dependencies
+        run: |
+          cd fresh
+          flutter pub get
 
-      - uses: actions/upload-artifact@v4
+      - name: Build debug APK
+        run: |
+          cd fresh
+          flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: sms-gateway-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          path: fresh/build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 30
