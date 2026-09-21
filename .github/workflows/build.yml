@@ -37,61 +37,8 @@ jobs:
       - name: Overlay our custom files
         run: |
           cp lib/main.dart fresh/lib/main.dart
-          cp android/app/google-services.json fresh/android/app/google-services.json
           cp pubspec.yaml fresh/pubspec.yaml
           cp android/app/src/main/AndroidManifest.xml fresh/android/app/src/main/AndroidManifest.xml
-
-      - name: Apply Google Services plugin
-        run: |
-          cd fresh
-          ls -la android/
-
-          # Determine which gradle file type was generated
-          if [ -f android/app/build.gradle.kts ]; then
-            APP_GRADLE="android/app/build.gradle.kts"
-            PROJECT_GRADLE="android/settings.gradle.kts"
-            GROOVY=false
-          else
-            APP_GRADLE="android/app/build.gradle"
-            PROJECT_GRADLE="android/settings.gradle"
-            GROOVY=true
-          fi
-
-          echo "Using: $APP_GRADLE and $PROJECT_GRADLE"
-
-          # Apply google-services plugin to app-level
-          if [ "$GROOVY" = "true" ]; then
-            if ! grep -q "com.google.gms.google-services" "$APP_GRADLE"; then
-              echo "apply plugin: 'com.google.gms.google-services'" >> "$APP_GRADLE"
-            fi
-          else
-            if ! grep -q "com.google.gms.google-services" "$APP_GRADLE"; then
-              echo 'apply(plugin = "com.google.gms.google-services")' >> "$APP_GRADLE"
-            fi
-          fi
-
-          # Apply plugin declaration to project-level
-          if [ "$GROOVY" = "true" ]; then
-            if ! grep -q "com.google.gms.google-services" "$PROJECT_GRADLE"; then
-              sed -i "/id \"dev.flutter.flutter-plugin-loader\"/a\\    id \"com.google.gms.google-services\" version \"4.4.2\" apply false" "$PROJECT_GRADLE"
-            fi
-          else
-            if ! grep -q "com.google.gms.google-services" "$PROJECT_GRADLE"; then
-              sed -i '/id("dev.flutter.flutter-plugin-loader")/a\    id("com.google.gms.google-services") version "4.4.2" apply false' "$PROJECT_GRADLE"
-            fi
-          fi
-
-      - name: Verify before build
-        run: |
-          cd fresh
-          echo "=== android/app/ ==="
-          ls -la android/app/
-          echo "=== google-services.json ==="
-          head -5 android/app/google-services.json
-          echo "=== app gradle (google-services line) ==="
-          grep -n "google-services" android/app/build.gradle* || echo "NOT FOUND"
-          echo "=== project gradle (google-services line) ==="
-          grep -n "google-services" android/settings.gradle* || echo "NOT FOUND"
 
       - name: Install dependencies
         run: |
