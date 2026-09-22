@@ -5,11 +5,16 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_native_sms/flutter_native_sms.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+// ==================== CONFIG ====================
 const String POLL_URL = 'https://winnersonlineschool.com/winners/poll.php';
 const String GATEWAY_KEY = 'winners_gw_9f3a8c2e1b7d4f6a0c8e2d5b9a1f3c7e';
-const String SIM_SLOT = '0';
 const int POLL_SECONDS = 20;
 
+// SIM slots
+const String SIM_AIRTEL = '0'; // Airtel on slot 1
+const String SIM_TNM    = '1'; // TNM on slot 2
+
+// ==================== REACTIVE STATE ====================
 final ValueNotifier<List<String>> logNotifier = ValueNotifier<List<String>>([]);
 final ValueNotifier<String> statusNotifier = ValueNotifier<String>('starting');
 final ValueNotifier<String> lastPollNotifier = ValueNotifier<String>('never');
@@ -25,6 +30,27 @@ void logLine(String s) {
   logNotifier.value = current;
 }
 
+// ==================== NETWORK DETECTION ====================
+/// Returns '0' for Airtel, '1' for TNM. Default: '0'.
+String detectSim(String phone) {
+  final p = phone.replaceAll(RegExp(r'[^0-9]'), '');
+  final local = p.startsWith('265') ? '0${p.substring(3)}' : p;
+
+  // TNM: 088, 089
+  if (local.startsWith('088') || local.startsWith('089')) {
+    return SIM_TNM;
+  }
+
+  // Airtel: 098, 099
+  if (local.startsWith('098') || local.startsWith('099')) {
+    return SIM_AIRTEL;
+  }
+
+  // Unknown prefix — fall back to Airtel
+  return SIM_AIRTEL;
+}
+
+// ==================== PERMISSIONS ====================
 Future<bool> requestSmsPermissions() async {
   try {
     final sms = await Permission.sms.request();
@@ -38,11 +64,16 @@ Future<bool> requestSmsPermissions() async {
   }
 }
 
+// ==================== SEND SMS ====================
 Future<bool> sendSms(String phone, String message) async {
   try {
-    logLine('  sending SMS to $phone via SIM $SIM_SLOT');
+    final sim = detectSim(phone);
+    final network = sim == SIM_AIRTEL ? 'Airtel' : 'TNM';
+    logLine('  sending SMS to $phone via $network (SIM $sim)');
+
     final sender = FlutterNativeSms();
-    await sender.send(phone: phone, smsBody: message, sim: SIM_SLOT);
+    await sender.send(phone: phone, smsBody: message, sim: sim);
+
     logLine('  OK SMS sent to $phone');
     sentCountNotifier.value = sentCountNotifier.value + 1;
     return true;
@@ -52,6 +83,7 @@ Future<bool> sendSms(String phone, String message) async {
   }
 }
 
+// ==================== POLL ONCE ====================
 Future<bool> pollOnce() async {
   try {
     final res = await http.get(
@@ -97,6 +129,7 @@ Future<bool> pollOnce() async {
   }
 }
 
+// ==================== POLL LOOP ====================
 Future<void> pollingLoop() async {
   while (true) {
     if (pausedNotifier.value) {
@@ -114,6 +147,7 @@ Future<void> pollingLoop() async {
   }
 }
 
+// ==================== MAIN ====================
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const GatewayApp());
@@ -170,6 +204,7 @@ class _HomePageState extends State<HomePage> {
 
     statusNotifier.value = 'polling';
     logLine('--- polling every $POLL_SECONDS seconds ---');
+    logLine('--- dual SIM: Airtel=slot 0, TNM=slot 1 ---');
     pollingLoop();
   }
 
@@ -222,6 +257,11 @@ class _HomePageState extends State<HomePage> {
                         ? Colors.blue.shade100
                         : Colors.orange.shade100,
                   ),
+                ),
+                const Chip(
+                  label: Text('Airtel:0  TNM:1',
+                      style: TextStyle(fontSize: 12)),
+                  backgroundColor: Color(0xFFE0E0E0),
                 ),
               ],
             ),
