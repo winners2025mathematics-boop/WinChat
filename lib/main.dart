@@ -9,10 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 const String POLL_URL = 'https://winnersonlineschool.com/winners/poll.php';
 const String GATEWAY_KEY = 'winners_gw_9f3a8c2e1b7d4f6a0c8e2d5b9a1f3c7e';
 const int POLL_SECONDS = 20;
-
-// SIM slots
-const String SIM_AIRTEL = '0'; // Airtel on slot 1
-const String SIM_TNM    = '1'; // TNM on slot 2
+const String SIM_SLOT = '1'; // TNM on SIM 2
 
 // ==================== REACTIVE STATE ====================
 final ValueNotifier<List<String>> logNotifier = ValueNotifier<List<String>>([]);
@@ -28,26 +25,6 @@ void logLine(String s) {
   current.insert(0, line);
   if (current.length > 300) current.removeLast();
   logNotifier.value = current;
-}
-
-// ==================== NETWORK DETECTION ====================
-/// Returns '0' for Airtel, '1' for TNM. Default: '0'.
-String detectSim(String phone) {
-  final p = phone.replaceAll(RegExp(r'[^0-9]'), '');
-  final local = p.startsWith('265') ? '0${p.substring(3)}' : p;
-
-  // TNM: 088, 089
-  if (local.startsWith('088') || local.startsWith('089')) {
-    return SIM_TNM;
-  }
-
-  // Airtel: 098, 099
-  if (local.startsWith('098') || local.startsWith('099')) {
-    return SIM_AIRTEL;
-  }
-
-  // Unknown prefix — fall back to Airtel
-  return SIM_AIRTEL;
 }
 
 // ==================== PERMISSIONS ====================
@@ -67,14 +44,14 @@ Future<bool> requestSmsPermissions() async {
 // ==================== SEND SMS ====================
 Future<bool> sendSms(String phone, String message) async {
   try {
-    final sim = detectSim(phone);
-    final network = sim == SIM_AIRTEL ? 'Airtel' : 'TNM';
-    logLine('  sending SMS to $phone via $network (SIM $sim)');
-
+    logLine('  sending SMS to $phone via SIM $SIM_SLOT');
     final sender = FlutterNativeSms();
-    await sender.send(phone: phone, smsBody: message, sim: sim);
-
-    logLine('  OK SMS sent to $phone');
+    await sender.send(
+      phone: phone,
+      smsBody: message,
+      sim: SIM_SLOT,
+    );
+    logLine('  OK SMS queued to $phone');
     sentCountNotifier.value = sentCountNotifier.value + 1;
     return true;
   } catch (e) {
@@ -204,7 +181,7 @@ class _HomePageState extends State<HomePage> {
 
     statusNotifier.value = 'polling';
     logLine('--- polling every $POLL_SECONDS seconds ---');
-    logLine('--- dual SIM: Airtel=slot 0, TNM=slot 1 ---');
+    logLine('--- sending all SMS via SIM $SIM_SLOT ---');
     pollingLoop();
   }
 
@@ -259,7 +236,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 const Chip(
-                  label: Text('Airtel:0  TNM:1',
+                  label: Text('Sending via SIM 1',
                       style: TextStyle(fontSize: 12)),
                   backgroundColor: Color(0xFFE0E0E0),
                 ),
