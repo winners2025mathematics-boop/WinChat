@@ -1,288 +1,870 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_native_sms/flutter_native_sms.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// ==================== CONFIG ====================
-const String POLL_URL = 'https://winnersonlineschool.com/winners/poll.php';
-const String GATEWAY_KEY = 'winners_gw_9f3a8c2e1b7d4f6a0c8e2d5b9a1f3c7e';
-const int POLL_SECONDS = 20;
-const String SIM_SLOT = '1'; // TNM on SIM 2
+// ============================================================
+// CONFIGURATION
+// ============================================================
 
-// ==================== REACTIVE STATE ====================
-final ValueNotifier<List<String>> logNotifier = ValueNotifier<List<String>>([]);
-final ValueNotifier<String> statusNotifier = ValueNotifier<String>('starting');
-final ValueNotifier<String> lastPollNotifier = ValueNotifier<String>('never');
-final ValueNotifier<int> sentCountNotifier = ValueNotifier<int>(0);
-final ValueNotifier<bool> pausedNotifier = ValueNotifier<bool>(false);
+const String pollUrl =
+    'https://winnersonlineschool.com/winners/poll.php';
 
-void logLine(String s) {
-  final line = '${DateTime.now().toIso8601String().substring(11, 19)}  $s';
+const String gatewayKey =
+    'winners_gw_9f3a8c2e1b7d4f6a0c8e2d5b9a1f3c7e';
+
+// Poll interval when there is no job.
+const int pollSeconds = 20;
+
+// flutter_native_sms:
+// 0 = SIM 1
+// 1 = SIM 2
+//
+// TNM is in SIM 2.
+const String simSlot = '1';
+
+
+// ============================================================
+// STATE
+// ============================================================
+
+final ValueNotifier<List<String>> logs =
+    ValueNotifier<List<String>>([]);
+
+final ValueNotifier<String> status =
+    ValueNotifier<String>('Starting');
+
+final ValueNotifier<String> lastPoll =
+    ValueNotifier<String>('Never');
+
+final ValueNotifier<int> sentCount =
+    ValueNotifier<int>(0);
+
+final ValueNotifier<int> failedCount =
+    ValueNotifier<int>(0);
+
+final ValueNotifier<bool> paused =
+    ValueNotifier<bool>(false);
+
+
+// ============================================================
+// LOG
+// ============================================================
+
+void logMessage(String message) {
+  final now = DateTime.now();
+
+  final time =
+      '${now.hour.toString().padLeft(2, '0')}:'
+      '${now.minute.toString().padLeft(2, '0')}:'
+      '${now.second.toString().padLeft(2, '0')}';
+
+  final line = '$time  $message';
+
   debugPrint(line);
-  final current = List<String>.from(logNotifier.value);
-  current.insert(0, line);
-  if (current.length > 300) current.removeLast();
-  logNotifier.value = current;
+
+  final copy = List<String>.from(logs.value);
+
+  copy.insert(0, line);
+
+  if (copy.length > 300) {
+    copy.removeLast();
+  }
+
+  logs.value = copy;
 }
 
-// ==================== PERMISSIONS ====================
-Future<bool> requestSmsPermissions() async {
+
+// ============================================================
+// PERMISSIONS
+// ============================================================
+
+Future<bool> requestPermissions() async {
   try {
-    final sms = await Permission.sms.request();
-    logLine('Perm SMS: ${sms.isGranted ? "OK" : "DENIED"}');
-    final phone = await Permission.phone.request();
-    logLine('Perm Phone: ${phone.isGranted ? "OK" : "DENIED"}');
-    return sms.isGranted && phone.isGranted;
+    final smsPermission =
+        await Permission.sms.request();
+
+    logMessage(
+      'SMS permission: '
+      '${smsPermission.isGranted ? "GRANTED" : "DENIED"}',
+    );
+
+    final phonePermission =
+        await Permission.phone.request();
+
+    logMessage(
+      'Phone permission: '
+      '${phonePermission.isGranted ? "GRANTED" : "DENIED"}',
+    );
+
+    return smsPermission.isGranted &&
+        phonePermission.isGranted;
   } catch (e) {
-    logLine('Perm exception: $e');
+    logMessage(
+      'Permission error: $e',
+    );
+
     return false;
   }
 }
 
-// ==================== SEND SMS ====================
-Future<bool> sendSms(String phone, String message) async {
+
+// ============================================================
+// SEND SMS
+// ============================================================
+
+Future<bool> sendSms({
+  required String phone,
+  required String message,
+}) async {
   try {
-    logLine('  sending SMS to $phone via SIM $SIM_SLOT');
-    final sender = FlutterNativeSms();
+    logMessage(
+      'SMS SEND START',
+    );
+
+    logMessage(
+      'Phone: $phone',
+    );
+
+    logMessage(
+      'SIM slot: $simSlot',
+    );
+
+    logMessage(
+      'Message length: ${message.length}',
+    );
+
+    final sender =
+        FlutterNativeSms();
+
     await sender.send(
       phone: phone,
       smsBody: message,
-      sim: SIM_SLOT,
+      sim: simSlot,
     );
-    logLine('  OK SMS queued to $phone');
-    sentCountNotifier.value = sentCountNotifier.value + 1;
+
+    sentCount.value =
+        sentCount.value + 1;
+
+    logMessage(
+      'SMS SEND REQUEST ACCEPTED',
+    );
+
     return true;
   } catch (e) {
-    logLine('  X SMS send failed: $e');
+    failedCount.value =
+        failedCount.value + 1;
+
+    logMessage(
+      'SMS SEND FAILED: $e',
+    );
+
     return false;
   }
 }
 
-// ==================== POLL ONCE ====================
-Future<bool> pollOnce() async {
+
+// ============================================================
+// SERVER RESPONSE
+// ============================================================
+
+class SmsJob {
+  final String id;
+  final String phone;
+  final String message;
+
+  SmsJob({
+    required this.id,
+    required this.phone,
+    required this.message,
+  });
+
+  factory SmsJob.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    return SmsJob(
+      id: json['id']?.toString() ?? '',
+      phone: json['phone']?.toString().trim() ?? '',
+      message: json['message']?.toString() ?? '',
+    );
+  }
+}
+
+
+// ============================================================
+// POLL SERVER
+// ============================================================
+
+Future<SmsJob?> pollServer() async {
   try {
-    final res = await http.get(
-      Uri.parse(POLL_URL),
-      headers: {'X-Gateway-Key': GATEWAY_KEY},
-    ).timeout(const Duration(seconds: 30));
+    final response = await http
+        .get(
+          Uri.parse(pollUrl),
+          headers: {
+            'X-Gateway-Key': gatewayKey,
+            'Accept': 'application/json',
+          },
+        )
+        .timeout(
+          const Duration(seconds: 30),
+        );
 
-    lastPollNotifier.value = DateTime.now().toIso8601String().substring(11, 19);
+    final now = DateTime.now();
 
-    if (res.statusCode != 200) {
-      logLine('poll -> HTTP ${res.statusCode}: ${res.body}');
-      return false;
+    lastPoll.value =
+        '${now.hour.toString().padLeft(2, '0')}:'
+        '${now.minute.toString().padLeft(2, '0')}:'
+        '${now.second.toString().padLeft(2, '0')}';
+
+    logMessage(
+      'HTTP ${response.statusCode}',
+    );
+
+    if (response.statusCode != 200) {
+      logMessage(
+        'SERVER ERROR: ${response.body}',
+      );
+
+      return null;
     }
 
-    final dynamic decoded = jsonDecode(res.body);
+    final body = response.body.trim();
 
-    if (decoded is List && decoded.isEmpty) {
-      logLine('poll -> 200 OK, no jobs');
-      return false;
+    if (body.isEmpty) {
+      logMessage(
+        'SERVER: empty response',
+      );
+
+      return null;
     }
 
-    if (decoded is Map<String, dynamic>) {
-      final id = decoded['id']?.toString() ?? 'unknown';
-      final phone = decoded['phone']?.toString() ?? '';
-      final message = decoded['message']?.toString() ?? '';
+    dynamic decoded;
 
-      if (phone.isEmpty || message.isEmpty) {
-        logLine('poll -> 200 OK, malformed job (id=$id)');
-        return false;
+    try {
+      decoded = jsonDecode(body);
+    } catch (e) {
+      logMessage(
+        'JSON ERROR: $e',
+      );
+
+      logMessage(
+        'Response: $body',
+      );
+
+      return null;
+    }
+
+    // --------------------------------------------------------
+    // NO JOB
+    // --------------------------------------------------------
+
+    if (decoded is List) {
+      if (decoded.isEmpty) {
+        logMessage(
+          'SERVER: no jobs',
+        );
+      } else {
+        logMessage(
+          'SERVER returned a list instead of a single job',
+        );
       }
 
-      logLine('poll -> 200 OK, JOB id=$id');
-      logLine('  phone=$phone');
-      await sendSms(phone, message);
-      return true;
+      return null;
     }
 
-    logLine('poll -> 200 OK, unexpected: ${res.body.substring(0, 80)}');
-    return false;
+    // --------------------------------------------------------
+    // JOB
+    // --------------------------------------------------------
+
+    if (decoded is Map<String, dynamic>) {
+      final job =
+          SmsJob.fromJson(decoded);
+
+      if (job.id.isEmpty) {
+        logMessage(
+          'JOB ERROR: missing id',
+        );
+
+        return null;
+      }
+
+      if (job.phone.isEmpty) {
+        logMessage(
+          'JOB ${job.id}: missing phone',
+        );
+
+        return null;
+      }
+
+      if (job.message.isEmpty) {
+        logMessage(
+          'JOB ${job.id}: missing message',
+        );
+
+        return null;
+      }
+
+      logMessage(
+        'JOB RECEIVED: ${job.id}',
+      );
+
+      logMessage(
+        'Recipient: ${job.phone}',
+      );
+
+      return job;
+    }
+
+    logMessage(
+      'SERVER: unexpected response format',
+    );
+
+    return null;
   } catch (e) {
-    logLine('poll exception: $e');
-    return false;
+    logMessage(
+      'POLL ERROR: $e',
+    );
+
+    return null;
   }
 }
 
-// ==================== POLL LOOP ====================
-Future<void> pollingLoop() async {
-  while (true) {
-    if (pausedNotifier.value) {
-      await Future.delayed(const Duration(seconds: 3));
+
+// ============================================================
+// JOB PROCESSING
+// ============================================================
+
+bool processingJob = false;
+
+Future<void> processOneJob() async {
+  if (processingJob) {
+    logMessage(
+      'Another job is already being processed',
+    );
+
+    return;
+  }
+
+  processingJob = true;
+
+  try {
+    final job =
+        await pollServer();
+
+    if (job == null) {
+      return;
+    }
+
+    status.value =
+        'Sending';
+
+    final success =
+        await sendSms(
+      phone: job.phone,
+      message: job.message,
+    );
+
+    if (success) {
+      logMessage(
+        'JOB ${job.id}: SEND ACCEPTED',
+      );
+
+      status.value =
+          'Polling';
+
+      /*
+       IMPORTANT:
+
+       Your current poll.php API only returns a job.
+       It does not provide a completion endpoint in
+       the code you supplied.
+
+       Therefore we cannot safely invent an acknowledgement
+       request here.
+
+       poll.php must mark the job completed/claimed on its
+       own side, or provide something such as:
+
+       POST /complete.php
+       {
+         "id": "...",
+         "status": "sent"
+       }
+
+       Otherwise the same job can potentially be returned
+       repeatedly.
+      */
+    } else {
+      logMessage(
+        'JOB ${job.id}: SEND FAILED',
+      );
+
+      status.value =
+          'Send failed';
+    }
+  } finally {
+    processingJob = false;
+  }
+}
+
+
+// ============================================================
+// POLLING LOOP
+// ============================================================
+
+bool loopRunning = false;
+
+Future<void> startPolling() async {
+  if (loopRunning) {
+    return;
+  }
+
+  loopRunning = true;
+
+  status.value =
+      'Polling';
+
+  logMessage(
+    '================================',
+  );
+
+  logMessage(
+    'SMS GATEWAY STARTED',
+  );
+
+  logMessage(
+    'Poll URL: $pollUrl',
+  );
+
+  logMessage(
+    'Polling interval: $pollSeconds seconds',
+  );
+
+  logMessage(
+    'SMS SIM: $simSlot',
+  );
+
+  logMessage(
+    '================================',
+  );
+
+  while (loopRunning) {
+    if (paused.value) {
+      status.value =
+          'Paused';
+
+      await Future.delayed(
+        const Duration(seconds: 2),
+      );
+
       continue;
     }
 
-    final gotJob = await pollOnce();
+    await processOneJob();
 
-    if (gotJob) {
-      await Future.delayed(const Duration(milliseconds: 500));
-    } else {
-      await Future.delayed(const Duration(seconds: POLL_SECONDS));
+    if (!paused.value) {
+      status.value =
+          'Polling';
     }
-  }
-}
 
-// ==================== MAIN ====================
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const GatewayApp());
-}
-
-class GatewayApp extends StatelessWidget {
-  const GatewayApp({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'SMS Gateway',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
-      home: const HomePage(),
+    await Future.delayed(
+      const Duration(seconds: pollSeconds),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-  @override
-  State<HomePage> createState() => _HomePageState();
+
+// ============================================================
+// MAIN
+// ============================================================
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  runApp(
+    const SmsGatewayApp(),
+  );
 }
 
-class _HomePageState extends State<HomePage> {
-  bool _permissionsGranted = false;
-  bool _started = false;
+
+// ============================================================
+// APP
+// ============================================================
+
+class SmsGatewayApp extends StatelessWidget {
+  const SmsGatewayApp({super.key});
+
+  @override
+  Widget build(
+    BuildContext context,
+  ) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'SMS Gateway',
+
+      theme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: Colors.blue,
+      ),
+
+      home: const GatewayHome(),
+    );
+  }
+}
+
+
+// ============================================================
+// HOME
+// ============================================================
+
+class GatewayHome extends StatefulWidget {
+  const GatewayHome({super.key});
+
+  @override
+  State<GatewayHome> createState() =>
+      _GatewayHomeState();
+}
+
+
+class _GatewayHomeState
+    extends State<GatewayHome> {
+
+  bool permissionsGranted = false;
+  bool started = false;
 
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(milliseconds: 200), _start);
+
+    WidgetsBinding.instance
+        .addPostFrameCallback(
+      (_) => initialize(),
+    );
   }
 
-  Future<void> _start() async {
-    if (_started) return;
-    _started = true;
 
-    logLine('--- starting gateway ---');
-
-    try {
-      await Permission.notification.request();
-      logLine('Notification permission requested');
-    } catch (e) {
-      logLine('Notification error: $e');
-    }
-
-    _permissionsGranted = await requestSmsPermissions();
-    if (mounted) setState(() {});
-    if (!_permissionsGranted) {
-      logLine('X SMS permission missing');
-      statusNotifier.value = 'no permission';
+  Future<void> initialize() async {
+    if (started) {
       return;
     }
 
-    statusNotifier.value = 'polling';
-    logLine('--- polling every $POLL_SECONDS seconds ---');
-    logLine('--- sending all SMS via SIM $SIM_SLOT ---');
-    pollingLoop();
+    started = true;
+
+    logMessage(
+      'Initializing SMS Gateway...',
+    );
+
+    try {
+      await Permission.notification.request();
+    } catch (_) {}
+
+    permissionsGranted =
+        await requestPermissions();
+
+    if (mounted) {
+      setState(() {});
+    }
+
+    if (!permissionsGranted) {
+      status.value =
+          'Permission denied';
+
+      logMessage(
+        'Gateway NOT started',
+      );
+
+      logMessage(
+        'SMS permissions are required',
+      );
+
+      return;
+    }
+
+    logMessage(
+      'All required permissions available',
+    );
+
+    await startPolling();
   }
 
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     return Scaffold(
+
       appBar: AppBar(
-        title: const Text('SMS Gateway'),
+        title: const Text(
+          'SMS Gateway',
+        ),
+
         actions: [
+
           ValueListenableBuilder<bool>(
-            valueListenable: pausedNotifier,
-            builder: (_, paused, __) => IconButton(
-              icon: Icon(paused ? Icons.play_arrow : Icons.pause),
-              onPressed: () {
-                pausedNotifier.value = !paused;
-                logLine(paused ? 'RESUMED' : 'PAUSED');
-              },
-            ),
+            valueListenable: paused,
+
+            builder:
+                (context, isPaused, child) {
+
+              return IconButton(
+                tooltip: isPaused
+                    ? 'Resume'
+                    : 'Pause',
+
+                icon: Icon(
+                  isPaused
+                      ? Icons.play_arrow
+                      : Icons.pause,
+                ),
+
+                onPressed: () {
+
+                  paused.value =
+                      !paused.value;
+
+                  logMessage(
+                    paused.value
+                        ? 'GATEWAY PAUSED'
+                        : 'GATEWAY RESUMED',
+                  );
+                },
+              );
+            },
           ),
+
           IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: () => logNotifier.value = [],
+            tooltip: 'Clear logs',
+
+            icon: const Icon(
+              Icons.delete_outline,
+            ),
+
+            onPressed: () {
+              logs.value = [];
+            },
           ),
         ],
       ),
+
+
       body: Padding(
-        padding: const EdgeInsets.all(12),
+        padding:
+            const EdgeInsets.all(12),
+
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          crossAxisAlignment:
+              CrossAxisAlignment.stretch,
+
           children: [
+
+            // =================================================
+            // STATUS CHIPS
+            // =================================================
+
             Wrap(
               spacing: 8,
-              runSpacing: 4,
+              runSpacing: 6,
+
               children: [
+
                 Chip(
                   label: Text(
-                    _permissionsGranted ? 'SMS OK' : 'SMS Permission Missing',
-                    style: const TextStyle(fontSize: 12),
+                    permissionsGranted
+                        ? 'SMS OK'
+                        : 'SMS Permission Missing',
                   ),
-                  backgroundColor: _permissionsGranted
-                      ? Colors.green.shade100
-                      : Colors.red.shade100,
                 ),
+
                 ValueListenableBuilder<String>(
-                  valueListenable: statusNotifier,
-                  builder: (_, s, __) => Chip(
-                    label: Text('STATUS: $s',
-                        style: const TextStyle(fontSize: 12)),
-                    backgroundColor: s == 'polling'
-                        ? Colors.blue.shade100
-                        : Colors.orange.shade100,
+                  valueListenable: status,
+
+                  builder:
+                      (context, value, child) {
+
+                    return Chip(
+                      label: Text(
+                        'STATUS: $value',
+                      ),
+                    );
+                  },
+                ),
+
+                const Chip(
+                  label: Text(
+                    'TNM • SIM 2',
                   ),
                 ),
-                const Chip(
-                  label: Text('Sending via SIM 1',
-                      style: TextStyle(fontSize: 12)),
-                  backgroundColor: Color(0xFFE0E0E0),
-                ),
+
               ],
             ),
-            const SizedBox(height: 8),
+
+
+            const SizedBox(
+              height: 8,
+            ),
+
+
+            // =================================================
+            // COUNTERS
+            // =================================================
+
             Row(
               children: [
+
                 Expanded(
-                  child: ValueListenableBuilder<String>(
-                    valueListenable: lastPollNotifier,
-                    builder: (_, t, __) => Text('Last poll: $t',
-                        style: const TextStyle(fontSize: 12)),
+                  child:
+                      ValueListenableBuilder<String>(
+                    valueListenable:
+                        lastPoll,
+
+                    builder:
+                        (context, value, child) {
+
+                      return Text(
+                        'Last poll: $value',
+                        style:
+                            const TextStyle(
+                          fontSize: 12,
+                        ),
+                      );
+                    },
                   ),
                 ),
+
                 ValueListenableBuilder<int>(
-                  valueListenable: sentCountNotifier,
-                  builder: (_, c, __) => Text('Sent: $c',
-                      style: const TextStyle(fontSize: 12)),
+                  valueListenable:
+                      sentCount,
+
+                  builder:
+                      (context, value, child) {
+
+                    return Text(
+                      'Accepted: $value',
+                      style:
+                          const TextStyle(
+                        fontSize: 12,
+                      ),
+                    );
+                  },
                 ),
+
+                const SizedBox(
+                  width: 12,
+                ),
+
+                ValueListenableBuilder<int>(
+                  valueListenable:
+                      failedCount,
+
+                  builder:
+                      (context, value, child) {
+
+                    return Text(
+                      'Failed: $value',
+                      style:
+                          const TextStyle(
+                        fontSize: 12,
+                      ),
+                    );
+                  },
+                ),
+
               ],
             ),
-            const Divider(height: 24),
-            const Text('Activity:',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
+
+
+            const Divider(
+              height: 24,
+            ),
+
+
+            // =================================================
+            // LOG TITLE
+            // =================================================
+
+            const Text(
+              'Activity',
+              style: TextStyle(
+                fontWeight:
+                    FontWeight.bold,
+              ),
+            ),
+
+
+            const SizedBox(
+              height: 5,
+            ),
+
+
+            // =================================================
+            // LOG WINDOW
+            // =================================================
+
             Expanded(
               child: Container(
-                color: Colors.black87,
-                padding: const EdgeInsets.all(8),
-                child: ValueListenableBuilder<List<String>>(
-                  valueListenable: logNotifier,
-                  builder: (_, lines, __) {
-                    return ListView.builder(
-                      itemCount: lines.length,
-                      itemBuilder: (_, i) => Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
+
+                color:
+                    Colors.black87,
+
+                padding:
+                    const EdgeInsets.all(8),
+
+                child:
+                    ValueListenableBuilder<
+                        List<String>>(
+                  valueListenable:
+                      logs,
+
+                  builder:
+                      (context, lines, child) {
+
+                    if (lines.isEmpty) {
+                      return const Center(
                         child: Text(
-                          lines[i],
-                          style: const TextStyle(
-                            color: Colors.greenAccent,
-                            fontSize: 11,
-                            fontFamily: 'monospace',
+                          'Waiting...',
+                          style: TextStyle(
+                            color:
+                                Colors.white54,
+                            fontFamily:
+                                'monospace',
                           ),
                         ),
-                      ),
+                      );
+                    }
+
+                    return ListView.builder(
+
+                      itemCount:
+                          lines.length,
+
+                      itemBuilder:
+                          (context, index) {
+
+                        return Padding(
+                          padding:
+                              const EdgeInsets
+                                  .symmetric(
+                            vertical: 1,
+                          ),
+
+                          child: Text(
+                            lines[index],
+
+                            style:
+                                const TextStyle(
+                              color:
+                                  Colors.greenAccent,
+                              fontSize: 11,
+                              fontFamily:
+                                  'monospace',
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
